@@ -6,7 +6,7 @@
 	<authorUrl>https://github.com/lungkao/flexida-joomla-plugin</authorUrl>
 	<copyright>Copyright (C) 2026 Flexida contributors</copyright>
 	<license>GNU General Public License version 2 or later</license>
-	<version>0.5.0</version>
+	<version>0.5.1</version>
 	<description>PLG_WEBSERVICES_FLEXICONTENT_XML_DESCRIPTION</description>
 	<namespace path="src">Flexida\Plugin\WebServices\Flexicontent</namespace>
 	<files>

@@ -59,6 +59,11 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
         }
 
         $this->authenticate();
+
+        if (!$this->mayUseContentApi()) {
+            $this->send(403, ['errors' => [['title' => 'Not allowed', 'code' => 403]]]);
+        }
+
         $m = [];
 
         if ($path === 'v1/flexicontent/types' && $method === 'GET') {
@@ -71,7 +76,7 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
             $this->uploadDocument();
         } elseif ($path === 'v1/flexicontent/items' && $method === 'POST') {
             $this->saveItem(0);
-        } elseif (preg_match('#^v1/flexicontent/items/(\d+)$#', $path, $m)) {
+        } elseif (preg_match('#^v1/flexicontent/items/(\d+)\z#', $path, $m)) {
             if ($method === 'GET') {
                 $this->getItem((int) $m[1]);
             } elseif ($method === 'PATCH') {
@@ -80,6 +85,24 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
         }
 
         $this->send(404, ['errors' => [['title' => 'Unknown FLEXIcontent route or method', 'code' => 404]]]);
+    }
+
+    /** core.edit, or core.edit.own on an item the caller created. */
+    private function canEditItem(int $id, int $createdBy): bool
+    {
+        $user  = $this->getApplication()->getIdentity();
+        $asset = 'com_content.article.' . $id;
+
+        return $user->authorise('core.edit', $asset) || ($user->authorise('core.edit.own', $asset) && $createdBy === (int) $user->id);
+    }
+
+    /** Any API user allowed to create or edit content may read the type/field configuration. */
+    private function mayUseContentApi(): bool
+    {
+        $user = $this->getApplication()->getIdentity();
+
+        return $user->authorise('core.create', 'com_content') || $user->authorise('core.edit', 'com_content')
+            || $user->authorise('core.edit.own', 'com_content') || $user->authorise('core.create', 'com_flexicontent');
     }
 
     /** Authentication normally happens after routing, so do the same silent API login here. */
@@ -186,7 +209,7 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
         $db = Factory::getDbo();
         $c  = $db->setQuery(
             $db->getQuery(true)
-                ->select('c.id, c.title, c.alias, c.introtext, c.fulltext, c.state, c.catid, c.language, c.access, e.type_id')
+                ->select('c.id, c.title, c.alias, c.introtext, c.fulltext, c.state, c.catid, c.language, c.access, c.created_by, e.type_id')
                 ->from('#__content AS c')
                 ->join('LEFT', '#__flexicontent_items_ext AS e ON e.item_id = c.id')
                 ->where('c.id = ' . $id)
@@ -196,10 +219,12 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
             $this->send(404, ['errors' => [['title' => 'Item not found', 'code' => 404]]]);
         }
 
-        if (!$this->getApplication()->getIdentity()->authorise('core.edit', 'com_content.article.' . $id)
-            && !$this->getApplication()->getIdentity()->authorise('core.edit.own', 'com_content.article.' . $id)) {
-            $this->send(403, ['errors' => [['title' => 'Not allowed', 'code' => 403]]]);
+        // Same answer whether the item is missing or not yours to see, so ids cannot be enumerated.
+        if (!$this->canEditItem($id, (int) $c['created_by'])) {
+            $this->send(404, ['errors' => [['title' => 'Item not found', 'code' => 404]]]);
         }
+
+        unset($c['created_by']);
 
         $c['cats'] = array_map('intval', $db->setQuery(
             $db->getQuery(true)->select('catid')->from('#__flexicontent_cats_item_relations')->where('itemid = ' . $id)->order('ordering')
@@ -339,7 +364,7 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
         $user = $app->getIdentity();
         $body = json_decode((string) file_get_contents('php://input'), true);
 
-        if (!$user->authorise('core.create', 'com_content') && !$user->authorise('core.create', 'com_flexicontent') && !$user->authorise('core.edit', 'com_content')) {
+        if (!$user->authorise('core.create', 'com_content') && !$user->authorise('core.edit', 'com_content')) {
             $this->send(403, ['errors' => [['title' => 'Not allowed to upload', 'code' => 403]]]);
         }
 
@@ -366,7 +391,7 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
         $this->ensureShims();
         $this->loadFlexicontent();
 
-        $base = pathinfo(\Joomla\Filesystem\File::makeSafe($body['filename']), PATHINFO_FILENAME) ?: 'file';
+        $base = str_replace('.', '_', pathinfo(\Joomla\Filesystem\File::makeSafe($body['filename']), PATHINFO_FILENAME)) ?: 'file';
         $dir  = COM_FLEXICONTENT_FILEPATH . DIRECTORY_SEPARATOR;
 
         if (!is_dir($dir) && !@mkdir($dir, 0755, true)) {
@@ -437,7 +462,7 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
             $id = $m[1];
 
             return [[
-                'url' => $url, 'api_type' => 'youtube', 'media_id' => $id, 'embed_url' => '//www.youtube.com/embed/' . $id,
+                'url' => 'https://www.youtube.com/watch?v=' . $id, 'api_type' => 'youtube', 'media_id' => $id, 'embed_url' => '//www.youtube.com/embed/' . $id,
                 'thumb' => 'https://i.ytimg.com/vi/' . $id . '/mqdefault.jpg', 'title' => '', 'author' => '', 'duration' => '',
                 'description' => '', 'height' => '0', 'width' => '0',
             ]];
@@ -445,12 +470,70 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
 
         if (preg_match('#^https?://(?:www\.)?vimeo\.com/(\d{5,12})#i', $url, $m)) {
             return [[
-                'url' => $url, 'api_type' => 'vimeo', 'media_id' => $m[1], 'embed_url' => '//player.vimeo.com/video/' . $m[1],
+                'url' => 'https://vimeo.com/' . $m[1], 'api_type' => 'vimeo', 'media_id' => $m[1], 'embed_url' => '//player.vimeo.com/video/' . $m[1],
                 'thumb' => '', 'title' => '', 'author' => '', 'duration' => '', 'description' => '', 'height' => '0', 'width' => '0',
             ]];
         }
 
         $this->send(422, ['errors' => [['title' => 'Field ' . $name . ': only YouTube or Vimeo links are supported', 'code' => 422]]]);
+    }
+
+    /**
+     * The client chooses state, access, categories and type; none of them may exceed the caller's own rights.
+     * Without core.edit.state a new item is saved unpublished and an update keeps its current state.
+     *
+     * @param array<string, mixed>      $data
+     * @param array<string, mixed>|null $existing
+     */
+    private function enforceWritePermissions(array &$data, ?array $existing, bool $isNew): void
+    {
+        $user = $this->getApplication()->getIdentity();
+        $db   = Factory::getDbo();
+        $deny = fn (string $why) => $this->send(403, ['errors' => [['title' => $why, 'code' => 403]]]);
+
+        // Categories: the main one and any secondary ones must exist and accept this caller's articles.
+        $cats = array_filter(array_merge([(int) ($data['catid'] ?? 0)], array_map('intval', (array) ($data['cid'] ?? []))));
+
+        foreach (array_unique($cats) as $cat) {
+            $known = (int) $db->setQuery($db->getQuery(true)->select('id')->from('#__categories')->where('id = ' . $cat)->where('extension = ' . $db->quote('com_content')))->loadResult();
+
+            if (!$known) {
+                $this->send(422, ['errors' => [['title' => 'Unknown category ' . $cat, 'code' => 422]]]);
+            }
+
+            $moved = $isNew || $cat !== (int) ($existing['catid'] ?? 0);
+
+            if ($moved && !$user->authorise('core.create', 'com_content.category.' . $cat)) {
+                $deny('Not allowed to file articles in category ' . $cat);
+            }
+        }
+
+        // Publishing state.
+        $statePerm = $isNew
+            ? $user->authorise('core.edit.state', 'com_content.category.' . (int) ($data['catid'] ?? 0))
+            : $user->authorise('core.edit.state', 'com_content.article.' . (int) $existing['id']);
+
+        if (!$statePerm) {
+            if ($isNew) {
+                $data['state'] = 0;
+            } else {
+                unset($data['state']);
+            }
+        }
+
+        // Access level: only one the caller can see.
+        if (isset($data['access']) && !\in_array((int) $data['access'], array_map('intval', $user->getAuthorisedViewLevels()), true)) {
+            $deny('Not allowed to use access level ' . (int) $data['access']);
+        }
+
+        // Content type must exist.
+        if (!empty($data['type_id'])) {
+            $type = (int) $db->setQuery($db->getQuery(true)->select('id')->from('#__flexicontent_types')->where('id = ' . (int) $data['type_id'])->where('published = 1'))->loadResult();
+
+            if (!$type) {
+                $this->send(422, ['errors' => [['title' => 'Unknown content type', 'code' => 422]]]);
+            }
+        }
     }
 
     /** Create ($id = 0) or update an item through FLEXIcontent's own model. */
@@ -470,7 +553,7 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
             $body = $this->fromCoreArticle($body, $id === 0);
         }
 
-        if ($id === 0 && !$user->authorise('core.create', 'com_content') && !$user->authorise('core.create', 'com_flexicontent')) {
+        if ($id === 0 && !$user->authorise('core.create', 'com_content')) {
             $this->send(403, ['errors' => [['title' => 'Not allowed to create items', 'code' => 403]]]);
         }
 
@@ -540,6 +623,13 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
 
         if (\array_key_exists('cats', $body)) {
             $data['cid'] = array_values(array_unique(array_map('intval', (array) $body['cats'])));
+        }
+
+        $this->enforceWritePermissions($data, $existing, $id === 0);
+
+        // Apply the Joomla text filter configured for the caller's user groups, as the back end does.
+        if (isset($data['text'])) {
+            $data['text'] = \Joomla\CMS\Component\ComponentHelper::filterText($data['text']);
         }
 
         if (\array_key_exists('tags', $body)) {
@@ -855,7 +945,7 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
         $user = $app->getIdentity();
         $body = json_decode((string) file_get_contents('php://input'), true);
 
-        if (!$user->authorise('core.create', 'com_content') && !$user->authorise('core.create', 'com_flexicontent') && !$user->authorise('core.edit', 'com_content')) {
+        if (!$user->authorise('core.create', 'com_content') && !$user->authorise('core.edit', 'com_content')) {
             $this->send(403, ['errors' => [['title' => 'Not allowed to upload', 'code' => 403]]]);
         }
 
@@ -880,7 +970,7 @@ final class Flexicontent extends CMSPlugin implements SubscriberInterface
         $this->loadFlexicontent();
 
         // The extension follows the real type, never the name the client gave.
-        $base = pathinfo(\Joomla\Filesystem\File::makeSafe($body['filename']), PATHINFO_FILENAME) ?: 'image';
+        $base = str_replace('.', '_', pathinfo(\Joomla\Filesystem\File::makeSafe($body['filename']), PATHINFO_FILENAME)) ?: 'image';
         $dir  = COM_FLEXICONTENT_FILEPATH . DIRECTORY_SEPARATOR;
 
         if (!is_dir($dir) && !@mkdir($dir, 0755, true)) {
