@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<extension type="plugin" group="webservices" method="upgrade">
+	<name>plg_webservices_flexicontent</name>
+	<author>Flexida contributors</author>
+	<creationDate>2026-11</creationDate>
+	<authorUrl>https://github.com/lungkao/flexida-joomla-plugin</authorUrl>
+	<copyright>Copyright (C) 2026 Flexida contributors</copyright>
+	<license>GNU General Public License version 2 or later</license>
+	<version>0.5.0</version>
+	<description>PLG_WEBSERVICES_FLEXICONTENT_XML_DESCRIPTION</description>
+	<namespace path="src">Flexida\Plugin\WebServices\Flexicontent</namespace>
+	<files>
+		<folder plugin="flexicontent">services</folder>
+		<folder>src</folder>
+		<folder>language</folder>
+	</files>
+	<languages>
+		<language tag="en-GB">language/en-GB/plg_webservices_flexicontent.sys.ini</language>
+	</languages>
+</extension>
